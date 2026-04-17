@@ -18,7 +18,10 @@ import { isTrueBoolean } from '../../../utils.js';
 export { MODULE_NAME };
 
 const MODULE_NAME = 'pokemon-dice-roller';
-const TEMPLATE_PATH = 'third-party/Pokemon-Dice-Roller';
+// Derive template path from the actual folder name so it works regardless of renaming
+const SCRIPT_URL = new URL(import.meta.url);
+const FOLDER_NAME = SCRIPT_URL.pathname.split('/').slice(-2, -1)[0];
+const TEMPLATE_PATH = `third-party/${FOLDER_NAME}`;
 
 const defaultSettings = Object.freeze({
     autoDetect: true,
