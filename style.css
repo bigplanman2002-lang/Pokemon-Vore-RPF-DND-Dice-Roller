@@ -1,0 +1,151 @@
+/* ═══════════════════════════════════════════
+   Pokémon RPG Dice Roller — Styles
+   Matches the pixel-RPG aesthetic from
+   Pokemon_RPG_Adventure.json theme
+   ═══════════════════════════════════════════ */
+
+/* ── Clickable ROLL buttons ── */
+.pdr-roll-btn {
+    font-family: 'Press Start 2P', 'VT323', monospace;
+    font-size: 0.6em;
+    background: linear-gradient(180deg, #3B4CCA 0%, #2a3599 100%);
+    border: 2px solid #5566dd;
+    border-radius: 0;
+    color: #fff;
+    padding: 5px 14px;
+    margin: 3px 4px;
+    cursor: pointer;
+    display: inline-block;
+    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.65);
+    box-shadow:
+        2px 2px 0 rgba(0, 0, 0, 0.5),
+        inset 1px 1px 0 rgba(255, 255, 255, 0.12);
+    transition: none;
+    image-rendering: pixelated;
+}
+
+.pdr-roll-btn:hover {
+    background: linear-gradient(180deg, #CC0000 0%, #990000 100%);
+    border-color: #ff4444;
+    color: #fff;
+}
+
+.pdr-roll-btn:active {
+    transform: translate(2px, 2px);
+    box-shadow: none;
+}
+
+/* ── AUTO-RESOLVE button ── */
+.pdr-auto-btn {
+    font-family: 'Press Start 2P', 'VT323', monospace;
+    font-size: 0.55em;
+    background: linear-gradient(180deg, #8B6508 0%, #6B4E06 100%);
+    border: 2px solid #B3A125;
+    border-radius: 0;
+    color: #FFDE00;
+    padding: 5px 14px;
+    margin: 3px 4px;
+    cursor: pointer;
+    display: inline-block;
+    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.7);
+    box-shadow:
+        2px 2px 0 rgba(0, 0, 0, 0.5),
+        inset 1px 1px 0 rgba(255, 255, 255, 0.1);
+    transition: none;
+}
+
+.pdr-auto-btn:hover {
+    background: linear-gradient(180deg, #B3A125 0%, #8B6508 100%);
+    border-color: #FFDE00;
+}
+
+.pdr-auto-btn:active {
+    transform: translate(2px, 2px);
+    box-shadow: none;
+}
+
+/* ── SUBMIT button ── */
+.pdr-submit-btn {
+    font-family: 'Press Start 2P', 'VT323', monospace;
+    font-size: 0.55em;
+    background: linear-gradient(180deg, #444 0%, #333 100%);
+    border: 2px solid #666;
+    border-radius: 0;
+    color: #ccc;
+    padding: 5px 14px;
+    margin: 3px 4px;
+    cursor: pointer;
+    display: inline-block;
+    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.6);
+    box-shadow:
+        2px 2px 0 rgba(0, 0, 0, 0.5),
+        inset 1px 1px 0 rgba(255, 255, 255, 0.08);
+    transition: none;
+}
+
+.pdr-submit-btn:hover {
+    background: linear-gradient(180deg, #555 0%, #444 100%);
+    border-color: #999;
+    color: #fff;
+}
+
+.pdr-submit-btn:active {
+    transform: translate(2px, 2px);
+    box-shadow: none;
+}
+
+/* ── Rolled result badge (replaces button after click) ── */
+.pdr-rolled {
+    font-family: 'Press Start 2P', 'VT323', monospace;
+    font-size: 0.55em;
+    display: inline-block;
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid #3a3a5c;
+    padding: 3px 10px;
+    margin: 2px 4px;
+    color: #7fdbca;
+    box-shadow: inset 1px 1px 0 rgba(0, 0, 0, 0.3);
+    vertical-align: middle;
+}
+
+.pdr-rolled strong {
+    color: #FFDE00;
+    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.6);
+}
+
+/* ── Resolution-colored badges ── */
+.pdr-crit-success {
+    border-color: #44FF88;
+    color: #44FF88;
+    text-shadow: 0 0 6px rgba(68, 255, 136, 0.3);
+}
+
+.pdr-success {
+    border-color: #44DD44;
+    color: #44DD44;
+}
+
+.pdr-failure {
+    border-color: #FF6B6B;
+    color: #FF6B6B;
+}
+
+.pdr-crit-failure {
+    border-color: #CC0000;
+    color: #CC0000;
+    text-shadow: 0 0 6px rgba(204, 0, 0, 0.3);
+}
+
+/* ── Subtle pulse animation on roll buttons ── */
+@keyframes pdr-pulse {
+    0%, 100% { box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5), inset 1px 1px 0 rgba(255, 255, 255, 0.12); }
+    50%      { box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5), inset 1px 1px 0 rgba(255, 255, 255, 0.12), 0 0 8px rgba(59, 76, 202, 0.4); }
+}
+
+.pdr-roll-btn {
+    animation: pdr-pulse 2s ease-in-out infinite;
+}
+
+.pdr-roll-btn:hover {
+    animation: none;
+}
