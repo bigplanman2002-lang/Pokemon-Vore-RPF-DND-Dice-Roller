@@ -2,47 +2,68 @@
  * Pokémon RPG Dice Roller — SillyTavern Extension
  *
  * Provides:
- *   /dice [notation] [dc=N]   — Roll dice from the slash command bar
+ *   /pdice [notation] [dc=N]  — Roll dice from the slash command bar
  *   Clickable [ROLL XdY], [AUTO-RESOLVE], [SUBMIT] buttons in AI messages
- *   DC resolution using the table from the Adult Pokémon Vore Text Adventure ruleset
+ *   DC resolution using the table from the Pokémon Vore Text Adventure ruleset
+ *   Function tool so the AI can call roll_dice directly
  */
 
-import { getContext, extension_settings } from '../../../extensions.js';
-import { eventSource, event_types } from '../../../../script.js';
+import { animation_duration, eventSource, event_types } from '../../../../script.js';
+import { renderExtensionTemplateAsync } from '../../../extensions.js';
+import { SlashCommand } from '../../../slash-commands/SlashCommand.js';
+import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from '../../../slash-commands/SlashCommandArgument.js';
+import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.js';
+import { isTrueBoolean } from '../../../utils.js';
 
-const EXT_NAME = 'pokemon-dice-roller';
+export { MODULE_NAME };
 
-const DEFAULT_SETTINGS = {
+const MODULE_NAME = 'pokemon-dice-roller';
+const TEMPLATE_PATH = 'third-party/Pokemon-Dice-Roller';
+
+const defaultSettings = Object.freeze({
     autoDetect: true,
-    autoTrigger: true,
-};
+    functionTool: false,
+    showDetails: true,
+    defaultFormula: '1d20',
+});
+
+// ═══════════════════════════════════════════
+//  SETTINGS
+// ═══════════════════════════════════════════
+
+function getSettings() {
+    const { extensionSettings } = SillyTavern.getContext();
+    if (!extensionSettings[MODULE_NAME]) {
+        extensionSettings[MODULE_NAME] = structuredClone(defaultSettings);
+    }
+    for (const key of Object.keys(defaultSettings)) {
+        if (!Object.hasOwn(extensionSettings[MODULE_NAME], key)) {
+            extensionSettings[MODULE_NAME][key] = defaultSettings[key];
+        }
+    }
+    return extensionSettings[MODULE_NAME];
+}
+
+function saveSettings() {
+    SillyTavern.getContext().saveSettingsDebounced();
+}
 
 // ═══════════════════════════════════════════
 //  DICE ENGINE
 // ═══════════════════════════════════════════
 
-/** Parse "1d20", "2d6+3", "1d20-2" → { count, sides, mod } or null */
-function parseDice(str) {
-    const m = String(str).trim().match(/^(\d+)?d(\d+)([+-]\d+)?$/i);
-    if (!m) return null;
-    return {
-        count: parseInt(m[1] || '1', 10),
-        sides: parseInt(m[2], 10),
-        mod: parseInt(m[3] || '0', 10),
-    };
+/** Validate a dice formula using the built-in droll library */
+function validate(formula) {
+    return SillyTavern.libs.droll.validate(formula);
 }
 
-/** Return an array of individual die results */
-function rollDice(count, sides) {
-    const results = [];
-    for (let i = 0; i < count; i++) {
-        results.push(Math.floor(Math.random() * sides) + 1);
-    }
-    return results;
+/** Roll using the built-in droll library */
+function rollRaw(formula) {
+    return SillyTavern.libs.droll.roll(formula);
 }
 
 /**
- * Resolution table from the Roll Protocol:
+ * DC Resolution table from the Roll Protocol:
  *   Success by 5+  → Critical Success
  *   Success by 0-4 → Success
  *   Fail by 1-4    → Failure
@@ -63,121 +84,67 @@ function resolveVsDC(total, dc) {
 }
 
 // ═══════════════════════════════════════════
-//  MESSAGE HELPERS
-// ═══════════════════════════════════════════
-
-/**
- * Send text as a user message (fills the textarea and clicks Send).
- * This triggers the AI to respond automatically.
- */
-function sendAsUserMessage(text) {
-    const textarea = document.querySelector('#send_textarea');
-    const sendBtn = document.querySelector('#send_but');
-    if (!textarea || !sendBtn) return false;
-    textarea.value = text;
-    textarea.dispatchEvent(new Event('input', { bubbles: true }));
-    sendBtn.click();
-    return true;
-}
-
-/**
- * Send a narrator / system message into the chat (visible to AI context
- * but does NOT auto-trigger a new AI response).
- */
-async function sendNarrator(text) {
-    try {
-        const script = await import('../../../../script.js');
-        if (typeof script.sendNarratorMessage === 'function') {
-            await script.sendNarratorMessage(text);
-            return;
-        }
-    } catch { /* fall through */ }
-
-    // Fallback: inject via /sys slash command
-    try {
-        const slashMod = await import('../../../slash-commands.js');
-        if (typeof slashMod.executeSlashCommands === 'function') {
-            await slashMod.executeSlashCommands(`/sys ${text.replace(/\|/g, '\\|')}`);
-            return;
-        }
-    } catch { /* fall through */ }
-
-    // Last resort — toast notification
-    if (typeof toastr !== 'undefined') {
-        toastr.info(text.replace(/[*_`]/g, ''), '🎲 Dice Roll');
-    }
-}
-
-// ═══════════════════════════════════════════
-//  FORMAT HELPERS
-// ═══════════════════════════════════════════
-
-/** Compact one-liner for user messages (AI-readable) */
-function formatUserRoll(diceStr, rolls, mod, total, dc) {
-    let msg = `[🎲 ROLL ${diceStr.toUpperCase()} = (${rolls.join(', ')})`;
-    if (mod !== 0) msg += ` ${mod > 0 ? '+' : ''}${mod}`;
-    msg += ` → Total: ${total}`;
-    if (dc != null) {
-        const res = resolveVsDC(total, dc);
-        msg += ` | vs DC ${dc}: ${res.emoji} ${res.label} — ${res.desc}`;
-    }
-    msg += ']';
-    return msg;
-}
-
-/** Detailed markdown block for narrator messages */
-function formatNarratorRoll(diceStr, rolls, mod, total, dc) {
-    let msg = `🎲 **ROLL: ${diceStr.toUpperCase()}**\n`;
-    msg += `Rolls: [${rolls.join(', ')}]`;
-    if (mod !== 0) msg += ` (${mod > 0 ? '+' : ''}${mod})`;
-    msg += `\n**Total: ${total}**`;
-    if (dc != null) {
-        const res = resolveVsDC(total, dc);
-        msg += `\nvs DC ${dc}: ${res.emoji} **${res.label}** — ${res.desc}`;
-    }
-    return msg;
-}
-
-// ═══════════════════════════════════════════
 //  CORE ROLL FUNCTION
 // ═══════════════════════════════════════════
 
-function executeRoll(diceStr, dc) {
-    const parsed = parseDice(diceStr);
-    if (!parsed) return null;
+/**
+ * Perform a dice roll.
+ * @param {string} formula - Dice formula (e.g. "2d6+3")
+ * @param {object} [options]
+ * @param {boolean} [options.quiet]  - Suppress chat output
+ * @param {string}  [options.reason] - Why the roll is happening
+ * @param {number|null} [options.dc] - Difficulty Class to check against
+ * @param {string}  [options.who]    - Who is rolling
+ * @returns {Promise<{total: string, rolls: string[], formula: string, dc: number|null}>}
+ */
+async function performRoll(formula, { quiet = false, reason = '', dc = null, who = '' } = {}) {
+    const empty = { total: '', rolls: [], formula: '', dc: null };
+    formula = (formula || '').trim();
+    if (!formula) formula = getSettings().defaultFormula;
 
-    const rolls = rollDice(parsed.count, parsed.sides);
-    const total = rolls.reduce((a, b) => a + b, 0) + parsed.mod;
+    // Normalize: "d20" → "1d20"
+    if (/^d\d+/i.test(formula)) formula = '1' + formula;
 
-    return { diceStr, rolls, mod: parsed.mod, total, dc };
-}
-
-// ═══════════════════════════════════════════
-//  SLASH COMMAND:  /dice
-// ═══════════════════════════════════════════
-
-async function diceCommand(namedArgs, unnamedArgs) {
-    const input = String(unnamedArgs || '1d20').trim();
-
-    // Accept inline DC:  "1d20 dc15"  or  "1d20 dc 15"
-    const dcInline = input.match(/(.+?)\s+dc\s*(\d+)/i);
-    const diceStr = dcInline ? dcInline[1].trim() : input;
-    const dc = dcInline
-        ? parseInt(dcInline[2], 10)
-        : namedArgs?.dc != null
-            ? parseInt(namedArgs.dc, 10)
-            : null;
-
-    const result = executeRoll(diceStr, dc);
-    if (!result) {
-        if (typeof toastr !== 'undefined') {
-            toastr.warning('Invalid dice format. Use NdX or NdX+M (e.g. 1d20, 2d6+3)', 'Dice Roller');
-        }
-        return '';
+    if (!validate(formula)) {
+        toastr.warning(`Invalid dice formula: ${formula}`, 'Pokémon Dice Roller');
+        return empty;
     }
 
-    await sendNarrator(formatNarratorRoll(result.diceStr, result.rolls, result.mod, result.total, result.dc));
-    return String(result.total);
+    const result = rollRaw(formula);
+    if (!result) return empty;
+
+    const rollData = {
+        total: String(result.total),
+        rolls: result.rolls.map(String),
+        formula,
+        dc,
+    };
+
+    if (!quiet) {
+        sendRollToChat(rollData, { reason, who });
+    }
+    return rollData;
+}
+
+/**
+ * Format and send roll result as a system message.
+ */
+function sendRollToChat(rollData, { reason = '', who = '' } = {}) {
+    const context = SillyTavern.getContext();
+    const settings = getSettings();
+
+    const roller = who || context.name1;
+    const reasonText = reason ? ` for "${reason}"` : '';
+    const detail = settings.showDetails && rollData.rolls.length > 1 ? ` [${rollData.rolls.join(', ')}]` : '';
+
+    let message = `🎲 ${roller} rolls ${rollData.formula}${reasonText}. Result: **${rollData.total}**${detail}`;
+
+    if (rollData.dc != null) {
+        const res = resolveVsDC(parseInt(rollData.total, 10), rollData.dc);
+        message += ` vs DC ${rollData.dc}: ${res.emoji} **${res.label}** — ${res.desc}`;
+    }
+
+    context.sendSystemMessage('generic', message, { isSmallSys: true });
 }
 
 // ═══════════════════════════════════════════
@@ -214,7 +181,7 @@ function processMessage(messageId) {
     }
 }
 
-/** Run once at load to catch already-rendered messages in a restored chat */
+/** Process messages already on screen (restored chats) */
 function processExistingMessages() {
     document.querySelectorAll('#chat .mes').forEach((mes) => {
         const id = mes.getAttribute('mesid');
@@ -228,7 +195,7 @@ function processExistingMessages() {
 
 function setupClickHandlers() {
     // ── 🎲 ROLL button ──
-    $(document).on('click', '.pdr-roll-btn', function (e) {
+    $(document).on('click', '.pdr-roll-btn', async function (e) {
         e.preventDefault();
         e.stopPropagation();
 
@@ -240,19 +207,17 @@ function setupClickHandlers() {
         const dcMatch = surroundingText.match(/DC:\s*(\d+)/i);
         const dc = dcMatch ? parseInt(dcMatch[1], 10) : null;
 
-        const result = executeRoll(diceStr, dc);
-        if (!result) return;
+        const result = await performRoll(diceStr, { dc, reason: 'Checkpoint Roll' });
+        if (!result.total) return;
+
+        const total = parseInt(result.total, 10);
 
         // Replace button with a "rolled" badge
+        const resClass = dc != null ? resolveVsDC(total, dc).cls : '';
+        const resLabel = dc != null ? ` (${resolveVsDC(total, dc).emoji} ${resolveVsDC(total, dc).label})` : '';
         btn.replaceWith(
-            `<span class="pdr-rolled ${dc != null ? resolveVsDC(result.total, dc).cls : ''}">`
-            + `🎲 Rolled ${diceStr}: <strong>${result.total}</strong>`
-            + `${dc != null ? ` (${resolveVsDC(result.total, dc).emoji} ${resolveVsDC(result.total, dc).label})` : ''}`
-            + `</span>`,
+            `<span class="pdr-rolled ${resClass}">🎲 Rolled ${diceStr}: <strong>${result.total}</strong>${resLabel}</span>`,
         );
-
-        // Send as user message so the AI sees the result and responds
-        sendAsUserMessage(formatUserRoll(result.diceStr, result.rolls, result.mod, result.total, result.dc));
     });
 
     // ── ⚡ AUTO-RESOLVE button ──
@@ -260,7 +225,9 @@ function setupClickHandlers() {
         e.preventDefault();
         e.stopPropagation();
         $(this).replaceWith('<span class="pdr-rolled">⚡ Auto-resolved</span>');
-        sendAsUserMessage('[AUTO-RESOLVE]');
+
+        const context = SillyTavern.getContext();
+        context.sendSystemMessage('generic', '⚡ Player chose AUTO-RESOLVE. GM determines the outcome.', { isSmallSys: true });
     });
 
     // ── ⏩ SUBMIT button ──
@@ -268,8 +235,93 @@ function setupClickHandlers() {
         e.preventDefault();
         e.stopPropagation();
         $(this).replaceWith('<span class="pdr-rolled">⏩ Submitted</span>');
-        sendAsUserMessage('[SUBMIT]');
+
+        const context = SillyTavern.getContext();
+        context.sendSystemMessage('generic', '⏩ Player chose SUBMIT. Accept worst reasonable consequence.', { isSmallSys: true });
     });
+}
+
+// ═══════════════════════════════════════════
+//  FUNCTION TOOL (AI-initiated rolls)
+// ═══════════════════════════════════════════
+
+function registerFunctionTools() {
+    try {
+        const { registerFunctionTool, unregisterFunctionTool } = SillyTavern.getContext();
+        if (!registerFunctionTool || !unregisterFunctionTool) {
+            console.debug('[pokemon-dice-roller] Function tools not supported');
+            return;
+        }
+
+        unregisterFunctionTool('pokemon_roll_dice');
+
+        const settings = getSettings();
+        if (!settings.functionTool) return;
+
+        const rollDiceSchema = Object.freeze({
+            type: 'object',
+            properties: {
+                who: {
+                    type: 'string',
+                    description: 'The name of the character or Pokémon rolling.',
+                },
+                formula: {
+                    type: 'string',
+                    description: 'Dice formula in NdS format. Examples: 1d20, 2d6, 1d20+5.',
+                },
+                dc: {
+                    type: 'number',
+                    description: 'Difficulty Class. 5=routine, 10=standard, 15=difficult, 18=very difficult, 20=extreme.',
+                },
+                reason: {
+                    type: 'string',
+                    description: 'Why the dice is being rolled, e.g. Vore Attempt, Escape Check, Attack Roll.',
+                },
+            },
+            required: ['formula'],
+        });
+
+        registerFunctionTool({
+            name: 'pokemon_roll_dice',
+            displayName: 'Pokémon RPG Dice Roll',
+            description: 'Roll dice for the Pokémon RPG. ALWAYS call this tool when a dice roll, check, or vore attempt is needed. Never simulate or invent dice results. Pass formula (like 1d20) and optionally dc (Difficulty Class).',
+            parameters: rollDiceSchema,
+            action: async (args) => {
+                console.log('[pokemon-dice-roller] Function tool args:', args);
+
+                // Sanitize args from AI
+                if (typeof args === 'string') {
+                    try { args = JSON.parse(args.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '')); } catch { args = {}; }
+                }
+                if (!args || typeof args !== 'object') args = {};
+                for (const key of ['arguments', 'parameters', 'input']) {
+                    if (args[key] && typeof args[key] === 'object') { args = args[key]; break; }
+                }
+
+                const formula = String(args.formula || args.dice || args.roll || '1d20').trim();
+                const dc = args.dc != null ? parseInt(args.dc, 10) : null;
+                const who = String(args.who || '').trim();
+                const reason = String(args.reason || '').trim();
+
+                const roll = await performRoll(formula, { dc, who, reason });
+                if (!roll.total) return 'Dice roll failed. The formula may be invalid.';
+
+                const whoText = who ? `${who} rolls` : 'Roll';
+                const reasonText = reason ? ` for ${reason}` : '';
+                let result = `${whoText} ${formula}${reasonText}. Result: ${roll.total} (individual rolls: ${roll.rolls.join(', ')})`;
+                if (dc != null) {
+                    const res = resolveVsDC(parseInt(roll.total, 10), dc);
+                    result += `. vs DC ${dc}: ${res.label} — ${res.desc}`;
+                }
+                return result;
+            },
+            formatMessage: () => '',
+        });
+
+        console.log('[pokemon-dice-roller] Function tool registered');
+    } catch (error) {
+        console.error('[pokemon-dice-roller] Error registering function tools:', error);
+    }
 }
 
 // ═══════════════════════════════════════════
@@ -277,85 +329,150 @@ function setupClickHandlers() {
 // ═══════════════════════════════════════════
 
 function onCharacterMessageRendered(messageId) {
-    const settings = extension_settings[EXT_NAME];
-    if (settings?.autoDetect === false) return;
+    const settings = getSettings();
+    if (!settings.autoDetect) return;
     processMessage(messageId);
 }
 
 // ═══════════════════════════════════════════
-//  REGISTER SLASH COMMANDS
+//  UI SETUP
 // ═══════════════════════════════════════════
 
-async function registerCommands() {
-    try {
-        const { SlashCommandParser } = await import('../../../slash-commands/SlashCommandParser.js');
-        const { SlashCommand } = await import('../../../slash-commands/SlashCommand.js');
-        const { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } = await import('../../../slash-commands/SlashCommandArgument.js');
+async function initUI() {
+    const settingsHtml = await renderExtensionTemplateAsync(TEMPLATE_PATH, 'settings');
+    const buttonHtml = await renderExtensionTemplateAsync(TEMPLATE_PATH, 'button');
 
-        SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-            name: 'dice',
-            callback: diceCommand,
-            namedArgumentList: [
-                SlashCommandNamedArgument.fromProps({
-                    name: 'dc',
-                    description: 'Difficulty Class to roll against',
-                    typeList: [ARGUMENT_TYPE.NUMBER],
-                    isRequired: false,
-                }),
-            ],
-            unnamedArgumentList: [
-                SlashCommandArgument.fromProps({
-                    description: 'Dice notation (e.g. 1d20, 2d6+3, 1d20 dc15)',
-                    typeList: [ARGUMENT_TYPE.STRING],
-                    isRequired: false,
-                    defaultValue: '1d20',
-                }),
-            ],
-            helpString: [
-                '<div>Pokémon RPG Dice Roller.</div>',
-                '<div><strong>Examples:</strong></div>',
-                '<ul>',
-                '<li><code>/dice 1d20</code> — Roll a d20</li>',
-                '<li><code>/dice 1d20 dc15</code> — Roll a d20 vs DC 15</li>',
-                '<li><code>/dice dc=12 2d6+3</code> — Roll 2d6+3 vs DC 12</li>',
-                '</ul>',
-            ].join(''),
-        }));
+    // Settings panel
+    const settingsContainer = $(document.getElementById('dice_container') ?? document.getElementById('extensions_settings2'));
+    settingsContainer.append(settingsHtml);
 
-        console.log(`[${EXT_NAME}] Slash command /dice registered (modern API)`);
-    } catch {
-        // Fallback: legacy registerSlashCommand
-        try {
-            const { registerSlashCommand } = await import('../../../slash-commands.js');
-            registerSlashCommand('dice', diceCommand, [], '<code>/dice 1d20 dc15</code> — Roll dice for the Pokémon RPG');
-            console.log(`[${EXT_NAME}] Slash command /dice registered (legacy API)`);
-        } catch (err) {
-            console.error(`[${EXT_NAME}] Could not register /dice command:`, err);
+    // Wand menu button
+    const wandContainer = $(document.getElementById('dice_wand_container') ?? document.getElementById('extensionsMenu'));
+    wandContainer.append(buttonHtml);
+
+    // Bind settings
+    const settings = getSettings();
+
+    $('#pdr_auto_detect').prop('checked', settings.autoDetect).on('change', function () {
+        settings.autoDetect = !!$(this).prop('checked');
+        saveSettings();
+    });
+
+    $('#pdr_function_tool').prop('checked', settings.functionTool).on('change', function () {
+        settings.functionTool = !!$(this).prop('checked');
+        saveSettings();
+        registerFunctionTools();
+    });
+
+    $('#pdr_show_details').prop('checked', settings.showDetails).on('change', function () {
+        settings.showDetails = !!$(this).prop('checked');
+        saveSettings();
+    });
+
+    $('#pdr_default_formula').val(settings.defaultFormula).on('change', function () {
+        const val = String($(this).val()).trim();
+        if (val && validate(val)) {
+            settings.defaultFormula = val;
+            saveSettings();
+        } else {
+            toastr.warning('Invalid default formula');
+            $(this).val(settings.defaultFormula);
         }
-    }
+    });
+
+    // Quick-roll button
+    $(document).on('click', '#pdr_roll_button', function () {
+        performRoll(settings.defaultFormula, { reason: 'Quick Roll' });
+    });
 }
 
 // ═══════════════════════════════════════════
-//  INIT
+//  SLASH COMMANDS
 // ═══════════════════════════════════════════
 
-jQuery(async () => {
-    // Initialise settings
-    if (!extension_settings[EXT_NAME]) {
-        extension_settings[EXT_NAME] = Object.assign({}, DEFAULT_SETTINGS);
+function registerSlashCommands() {
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'pdice',
+        aliases: ['proll'],
+        callback: async (args, value) => {
+            const quiet = isTrueBoolean(String(args.quiet));
+            const reason = String(args.reason || '');
+            const formula = String(value || getSettings().defaultFormula).trim();
+
+            // Parse inline DC: "1d20 dc15" or "1d20 dc 15"
+            const dcInline = formula.match(/(.+?)\s+dc\s*(\d+)/i);
+            const diceStr = dcInline ? dcInline[1].trim() : formula;
+            const dc = dcInline
+                ? parseInt(dcInline[2], 10)
+                : args.dc != null
+                    ? parseInt(args.dc, 10)
+                    : null;
+
+            const result = await performRoll(diceStr, { quiet, dc, reason });
+            return result.total;
+        },
+        helpString: [
+            '<div>Pokémon RPG Dice Roller with DC resolution.</div>',
+            '<div><b>Examples:</b></div>',
+            '<ul>',
+            '<li><code>/pdice 1d20</code> — Roll a d20</li>',
+            '<li><code>/pdice 1d20 dc15</code> — Roll vs DC 15</li>',
+            '<li><code>/pdice dc=12 2d6+3</code> — Roll 2d6+3 vs DC 12</li>',
+            '</ul>',
+        ].join(''),
+        returns: 'numeric roll result',
+        namedArgumentList: [
+            SlashCommandNamedArgument.fromProps({
+                name: 'quiet',
+                description: 'Suppress the result in chat',
+                isRequired: false,
+                typeList: [ARGUMENT_TYPE.BOOLEAN],
+                defaultValue: String(false),
+            }),
+            SlashCommandNamedArgument.fromProps({
+                name: 'dc',
+                description: 'Difficulty Class to roll against (5-20+)',
+                isRequired: false,
+                typeList: [ARGUMENT_TYPE.NUMBER],
+            }),
+            SlashCommandNamedArgument.fromProps({
+                name: 'reason',
+                description: 'Reason for the roll (shown in chat)',
+                isRequired: false,
+                typeList: [ARGUMENT_TYPE.STRING],
+            }),
+        ],
+        unnamedArgumentList: [
+            SlashCommandArgument.fromProps({
+                description: 'Dice formula, e.g. 1d20, 2d6+3, 1d20 dc15',
+                isRequired: false,
+                typeList: [ARGUMENT_TYPE.STRING],
+            }),
+        ],
+    }));
+}
+
+// ═══════════════════════════════════════════
+//  ENTRY POINT
+// ═══════════════════════════════════════════
+
+jQuery(async function () {
+    try {
+        await initUI();
+        registerFunctionTools();
+        registerSlashCommands();
+
+        // Listen for new AI messages to auto-detect [ROLL] markers
+        eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, onCharacterMessageRendered);
+
+        // Wire up button click handlers (delegated)
+        setupClickHandlers();
+
+        // Process any messages already on screen
+        processExistingMessages();
+
+        console.log('[pokemon-dice-roller] Extension loaded');
+    } catch (error) {
+        console.error('[pokemon-dice-roller] Failed to initialize:', error);
     }
-
-    // Register slash commands
-    await registerCommands();
-
-    // Listen for new AI messages
-    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, onCharacterMessageRendered);
-
-    // Wire up button click handlers (delegated, so works for future elements)
-    setupClickHandlers();
-
-    // Process any messages already on screen (restored chat)
-    processExistingMessages();
-
-    console.log(`[${EXT_NAME}] Extension loaded`);
 });

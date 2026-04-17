@@ -1,6 +1,6 @@
 {
     "display_name": "Pokémon RPG Dice Roller",
-    "loading_order": 100,
+    "loading_order": 5,
     "requires": [],
     "optional": [],
     "js": "index.js",
